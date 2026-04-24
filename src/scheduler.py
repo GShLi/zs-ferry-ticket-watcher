@@ -239,7 +239,8 @@ def _run_task(task_id: int):
             _save_order(db, task, trip, result)
             # 触发关联子任务
             _trigger_child_tasks(db, task_id, trip, log)
-            notify_booked(result.get("order_id") or "未知", route, task.travel_date)
+            notify_booked(result.get("order_id") or "未知", route, task.travel_date,
+                          result.get("payment_expire_at", ""))
             stop_task(task_id)
         else:
             log("ERROR", f"下单失败：{result['message']}")

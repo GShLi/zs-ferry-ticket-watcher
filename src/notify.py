@@ -45,10 +45,14 @@ def send_bark(title: str, body: str, url: str = "", sound: str = "birdsong") -> 
     return any(results)
 
 
-def notify_booked(order_id: str, route: str, travel_date: str):
+def notify_booked(order_id: str, route: str, travel_date: str, payment_expire_at: str = ""):
+    if payment_expire_at:
+        pay_line = f"请在 {payment_expire_at} 前完成支付（约5分钟）"
+    else:
+        pay_line = "请在5分钟内完成支付"
     send_bark(
         title="🎫 抢票成功！",
-        body=f"{route} {travel_date}\n订单号：{order_id}\n请在15分钟内完成支付",
+        body=f"{route} {travel_date}\n订单号：{order_id}\n{pay_line}",
         sound="success",
     )
 
