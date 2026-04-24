@@ -53,11 +53,11 @@ def save_session(driver: WebDriver, account: FerryAccount, db: Session):
     # 估算过期时间：取 cookie expiry 最小值
     expiries = [c["expiry"] for c in cookies if "expiry" in c]
     if expiries:
-        account.session_expires_at = datetime.utcfromtimestamp(min(expiries))
+        account.session_expires_at = datetime.fromtimestamp(min(expiries))
     else:
-        account.session_expires_at = datetime.utcnow() + timedelta(hours=24)
+        account.session_expires_at = datetime.now() + timedelta(hours=24)
 
-    account.last_login_at = datetime.utcnow()
+    account.last_login_at = datetime.now()
     db.commit()
 
 
@@ -98,7 +98,7 @@ def is_session_valid(account: FerryAccount) -> bool:
     """快速检查：过期时间是否仍在未来"""
     if not account.session_expires_at:
         return False
-    return account.session_expires_at > datetime.utcnow()
+    return account.session_expires_at > datetime.now()
 
 
 def verify_session_online(driver: WebDriver) -> bool:

@@ -1245,10 +1245,11 @@ const AccountsView = {
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="280">
+      <el-table-column label="操作" width="340">
         <template #default="{row}">
           <el-button size="small" @click="testLogin(row)" :loading="row._testing">测试登录</el-button>
           <el-button size="small" type="success" @click="syncAccount(row)" :loading="row._syncing">同步</el-button>
+          <el-button size="small" type="warning" @click="openCookieDlg(row)">导入Cookie</el-button>
           <el-button size="small" @click="openForm(row)">编辑</el-button>
           <el-button size="small" type="danger" @click="del(row)">删除</el-button>
         </template>
@@ -1268,12 +1269,29 @@ const AccountsView = {
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
-  </div>
+    <el-dialog v-model="cookieDlg" title="手动导入 Cookie" width="500px">
+      <p style="color:#666;font-size:13px;margin-bottom:12px">
+        在浏览器中打开 <strong>pc.ssky123.com</strong>，按 F12 → Application → Cookies，
+        复制所有 Cookie（或在 Network 标签页找到任意请求，复制请求头中的 Cookie 值），粘贴到下方。
+      </p>
+      <el-input
+        v-model="cookieRaw"
+        type="textarea"
+        :rows="5"
+        placeholder="acw_tc=xxx; _c_WBKFRo=xxx; token=xxx; ..."
+      />
+      <template #footer>
+        <el-button @click="cookieDlg=false">取消</el-button>
+        <el-button type="primary" :loading="cookieSaving" @click="saveCookies">导入</el-button>
+      </template>
+    </el-dialog>
   `,
   setup() {
     const list = ref([]); const dlg = ref(false); const saving = ref(false);
     const editing = ref(null);
     const form = reactive({ phone:"", password:"", remark:"" });
+    const cookieDlg = ref(false); const cookieRaw = ref(""); const cookieSaving = ref(false);
+    const cookieTarget = ref(null);
     async function load() {
       list.value = (await http.get("/api/accounts/")).map(a => ({...a, _testing: false, _syncing: false}));
     }
@@ -1321,8 +1339,23 @@ const AccountsView = {
         );
       } catch (e) { ElMessage.error(e.message); } finally { row._syncing = false; }
     }
+    function openCookieDlg(row) {
+      cookieTarget.value = row;
+      cookieRaw.value = "";
+      cookieDlg.value = true;
+    }
+    async function saveCookies() {
+      if (!cookieRaw.value.trim()) return ElMessage.warning("请粘贴 Cookie 字符串");
+      cookieSaving.value = true;
+      try {
+        const r = await http.post(`/api/accounts/${cookieTarget.value.id}/import-cookies`, { cookies: cookieRaw.value });
+        ElMessage.success(r.message);
+        cookieDlg.value = false;
+      } catch (e) { ElMessage.error(e.message); } finally { cookieSaving.value = false; }
+    }
     onMounted(load);
-    return { list, dlg, saving, editing, form, openForm, save, del, testLogin, syncAccount, isExpired, fmtDate };
+    return { list, dlg, saving, editing, form, openForm, save, del, testLogin, syncAccount, isExpired, fmtDate,
+             cookieDlg, cookieRaw, cookieSaving, cookieTarget, openCookieDlg, saveCookies };
   }
 };
 

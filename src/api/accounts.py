@@ -114,6 +114,42 @@ def sync_account(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{acc_id}/import-cookies")
+def import_cookies(
+    acc_id: int,
+    body: dict,
+    db: Session = Depends(get_db),
+    _: SystemUser = Depends(get_current_user),
+):
+    """接收浏览器 DevTools 粘贴的 Cookie 字符串（name=value; name2=value2），
+    解析后存入 cookies_json，使后续 API 请求携带 acw_tc 等 WAF Cookie。"""
+    import json
+    acc = db.query(FerryAccount).get(acc_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    raw = (body.get("cookies") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Cookie 字符串不能为空")
+    # 解析 "name=value; name2=value2" 格式
+    cookies_list = []
+    for part in raw.split(";"):
+        part = part.strip()
+        if "=" in part:
+            name, _, value = part.partition("=")
+            name = name.strip()
+            value = value.strip()
+            if name:
+                cookies_list.append({
+                    "name": name, "value": value,
+                    "domain": "pc.ssky123.com", "path": "/"
+                })
+    if not cookies_list:
+        raise HTTPException(status_code=400, detail="未能解析出任何 Cookie")
+    acc.cookies_json = json.dumps(cookies_list, ensure_ascii=False)
+    db.commit()
+    return {"success": True, "message": f"已导入 {len(cookies_list)} 个 Cookie"}
+
+
 def _bg_sync(acc_id: int):
     """在后台线程中为新添加账号执行同步（添加账号时自动触发）"""
     from src.crawler.factory import get_backend

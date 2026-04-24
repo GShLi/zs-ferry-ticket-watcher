@@ -321,11 +321,13 @@ def find_available_trip(
     preferred_seats: list = None,   # 新：多舱位名称列表
     sail_time_from: str = "",       # 开航时间起（"HH:MM"），空=不限
     sail_time_to: str = "",         # 开航时间止（"HH:MM"），空=不限
+    require_vehicle: bool = False,  # 是否需要同时检查车辆余票（小客车票）
 ) -> Optional[dict]:
     """
     从班次列表中找到合适的班次。
     preferred_seats: 优先舱位名称列表；优先返回包含任一指定舱位有余票的班次，无则降级。
     sail_time_from/to: 仅返回开航时间在范围内的班次。
+    require_vehicle: 为 True 时还要求 driverSeatClass 中有公开车辆余票。
     """
     # 统一处理舱位参数（兼容旧版 preferred_seat）
     seats_wanted: list = preferred_seats if preferred_seats is not None else (
@@ -345,12 +347,21 @@ def find_available_trip(
     def _is_api(trip) -> bool:
         return "seatClasses" in trip or "onSale" in trip
 
+    def _vehicle_ok(trip) -> bool:
+        """车辆余票检测：driverSeatClass 中任意一项 pubCurrentCount > 0"""
+        if not require_vehicle:
+            return True
+        car_seats = trip.get("driverSeatClass") or []
+        if isinstance(car_seats, dict):
+            car_seats = [car_seats]
+        return any(sc.get("pubCurrentCount", 0) > 0 for sc in car_seats)
+
     def is_ok(trip) -> bool:
         if _is_api(trip):
             if not trip.get("onSale", 1):
                 return False
             return any(
-                sc.get("localCurrentCount", 0) > 0 or sc.get("pubCurrentCount", 0) > 0
+                sc.get("pubCurrentCount", 0) > 0
                 for sc in (trip.get("seatClasses") or [])
             )
         return trip.get("remain", 0) > 0
@@ -361,7 +372,7 @@ def find_available_trip(
         if _is_api(trip):
             return any(
                 sc.get("className") in seats_wanted and
-                (sc.get("localCurrentCount", 0) > 0 or sc.get("pubCurrentCount", 0) > 0)
+                sc.get("pubCurrentCount", 0) > 0
                 for sc in (trip.get("seatClasses") or [])
             )
         return any(trip.get("seats", {}).get(s, 0) > 0 for s in seats_wanted)
@@ -371,24 +382,25 @@ def find_available_trip(
             return bool(trip.get("onSale", 1))
         return trip.get("status") == "正常"
 
-    # 第一轮：时间范围内 + 状态正常 + 指定舱位有票
+    # 第一轮：时间范围内 + 状态正常 + 指定舱位有票 + 车辆有票
     for trip in trips:
-        if in_time_range(trip) and status_ok(trip) and is_ok(trip) and seat_ok(trip):
+        if in_time_range(trip) and status_ok(trip) and is_ok(trip) and seat_ok(trip) and _vehicle_ok(trip):
             return trip
 
-    # 第二轮：时间范围内 + 指定舱位有票（不限状态）
+    # 第二轮：时间范围内 + 指定舱位有票 + 车辆有票（不限状态）
     if seats_wanted:
         for trip in trips:
-            if in_time_range(trip) and is_ok(trip) and seat_ok(trip):
+            if in_time_range(trip) and is_ok(trip) and seat_ok(trip) and _vehicle_ok(trip):
                 return trip
 
-    # 第三轮：时间范围内 + 任意有票班次
-    for trip in trips:
-        if in_time_range(trip) and status_ok(trip) and is_ok(trip):
-            return trip
+    # 第三轮：时间范围内 + 任意有票班次（仅无舱位偏好时使用，避免以错误舱位下单）
+    if not seats_wanted:
+        for trip in trips:
+            if in_time_range(trip) and status_ok(trip) and is_ok(trip) and _vehicle_ok(trip):
+                return trip
 
-    for trip in trips:
-        if in_time_range(trip) and is_ok(trip):
-            return trip
+        for trip in trips:
+            if in_time_range(trip) and is_ok(trip) and _vehicle_ok(trip):
+                return trip
 
     return None

@@ -72,6 +72,25 @@ def _write_log(db, task_id: int, level: str, message: str):
             pass
 
 
+def _reschedule_next_day_0700(task_id: int):
+    """夜间静默期（23:00-07:00），调度到明天 07:00 继续轮询"""
+    tomorrow = datetime.now() + timedelta(days=1)
+    run_at = tomorrow.replace(hour=7, minute=0, second=0, microsecond=0)
+    job_id = f"task_{task_id}"
+    try:
+        _scheduler.add_job(
+            _run_task,
+            trigger=DateTrigger(run_date=run_at),
+            args=[task_id],
+            id=job_id,
+            replace_existing=True,
+            max_instances=1,
+        )
+        logger.info(f"Task#{task_id} 夜间静默，已调度到 {run_at.strftime('%Y-%m-%d 07:00')} 继续")
+    except Exception as e:
+        logger.error(f"Task#{task_id} 夜间重新调度失败: {e}")
+
+
 def _run_task(task_id: int):
     """实际执行抢票逻辑的函数（在线程池中运行）"""
     from src.database import SessionLocal
@@ -90,6 +109,15 @@ def _run_task(task_id: int):
     try:
         task = db.query(Task).get(task_id)
         if not task or task.status not in ("running", "pending"):
+            return
+
+        # 夜间静默：23:00 ~ 07:00 暂停轮询，等到次日 07:00 再继续
+        current_hour = datetime.now().hour
+        if task.trigger_type == "poll" and (current_hour >= 23 or current_hour < 7):
+            task.status = "pending"
+            db.commit()
+            log("INFO", f"当前时间 {datetime.now().strftime('%H:%M')}，夜间静默期（23:00-07:00），暂停抢票，将于明天 07:00 继续")
+            _reschedule_next_day_0700(task_id)
             return
 
         task.status = "running"
@@ -119,6 +147,7 @@ def _run_task(task_id: int):
             preferred_seats=preferred_seats,
             sail_time_from=getattr(task, "sail_time_from", "") or "",
             sail_time_to=getattr(task, "sail_time_to", "") or "",
+            require_vehicle=bool(task.vehicle_id),
         )
         if not trip:
             if not trips:
@@ -143,7 +172,17 @@ def _run_task(task_id: int):
             return
 
         pax_ids = json.loads(task.passenger_ids or "[]")
-        log("INFO", f"发现有票，开始下单，共 {len(pax_ids)} 名旅客")
+        # 打印航线及余票信息
+        seat_info = "、".join(
+            f"{sc['className']}×{sc.get('pubCurrentCount', 0)}"
+            for sc in (trip.get("seatClasses") or [])
+            if sc.get("pubCurrentCount", 0) > 0
+        ) or "（舱位信息不详）"
+        log("INFO", (
+            f"发现有票：{trip.get('lineName', '')} "
+            f"{trip.get('sailTime', '')} {trip.get('shipName', '')}，"
+            f"余票：{seat_info}，开始下单，共 {len(pax_ids)} 名旅客"
+        ))
         # 将驾驶员 ID 注入 trip，供 book_ticket 识别哪位乘客是驾驶员
         if task.driver_passenger_id:
             trip["_driver_passenger_id"] = task.driver_passenger_id

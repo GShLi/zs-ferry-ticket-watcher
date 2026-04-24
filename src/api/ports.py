@@ -48,7 +48,7 @@ def _fetch_and_cache_ports(db: Session) -> list[dict]:
 
     # 清空旧缓存，写入新数据
     db.query(PortsCache).delete()
-    now = datetime.utcnow()
+    now = datetime.now()
     for item in line_list:
         db.add(PortsCache(
             start_port_num=item["startPortNum"],

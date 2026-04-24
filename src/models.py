@@ -17,7 +17,7 @@ class SystemUser(Base):
     role = Column(String(16), nullable=False, default="user")  # admin / user
     is_active = Column(Boolean, default=True)
     created_by = Column(Integer, ForeignKey("system_users.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class FerryAccount(Base):
@@ -31,7 +31,7 @@ class FerryAccount(Base):
     session_expires_at = Column(DateTime, nullable=True)
     last_login_at = Column(DateTime, nullable=True)
     remark = Column(String(128), default="")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
 
     tasks = relationship("Task", back_populates="account")
 
@@ -46,7 +46,7 @@ class Passenger(Base):
     phone = Column(String(20), nullable=True)
     remark = Column(String(128), default="")
     remote_ids_json = Column(Text, default="{}")  # {"<ferry_account_id>": passId}
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class Task(Base):
@@ -70,8 +70,8 @@ class Task(Base):
     trigger_value = Column(String(64), nullable=False)  # poll: 间隔秒数; schedule: ISO datetime
     status = Column(String(16), default="pending")  # pending/running/booked/failed/stopped
     created_by = Column(Integer, ForeignKey("system_users.id"), nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     account = relationship("FerryAccount", back_populates="tasks")
     logs = relationship("TaskLog", back_populates="task", cascade="all, delete-orphan")
@@ -88,7 +88,7 @@ class TaskLog(Base):
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
     level = Column(String(8), default="INFO")  # INFO / WARN / ERROR
     message = Column(Text, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
 
     task = relationship("Task", back_populates="logs")
 
@@ -101,7 +101,7 @@ class PortsCache(Base):
     start_port_name = Column(String(64), nullable=False)
     end_port_num = Column(Integer, nullable=False)
     end_port_name = Column(String(64), nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.now)
 
 
 class Vehicle(Base):
@@ -113,7 +113,7 @@ class Vehicle(Base):
     owner_name = Column(String(64), nullable=False, default="")     # 车主姓名
     remark = Column(String(128), default="")
     remote_ids_json = Column(Text, default="{}")  # {"<ferry_account_id>": passId}
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)
 
 
 class Setting(Base):
@@ -138,4 +138,4 @@ class Order(Base):
     passengers_json = Column(Text, default="[]")               # list of passenger names
     payment_expire_at = Column(String(32), nullable=True)      # 支付截止时间（字符串）
     status = Column(String(24), default="pending_payment")     # pending_payment / paid / cancelled
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.now)

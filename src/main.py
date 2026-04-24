@@ -53,6 +53,9 @@ def selenium_health(_=Depends(get_current_user)):
 # task_id -> set of WebSocket connections
 _ws_connections: dict[int, Set[WebSocket]] = defaultdict(set)
 
+# 主事件循环引用（由 lifespan 在启动时捕获，供后台线程调用）
+_main_loop: asyncio.AbstractEventLoop | None = None
+
 
 async def _broadcast(task_id: int, level: str, message: str):
     """广播日志到所有订阅该 task 的 WebSocket 客户端"""
@@ -71,10 +74,10 @@ async def _broadcast(task_id: int, level: str, message: str):
 
 
 def _sync_broadcast(task_id: int, level: str, message: str):
-    """从同步线程调用的广播入口"""
+    """从同步线程调用的广播入口，使用启动时捕获的主事件循环"""
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
+        loop = _main_loop
+        if loop and loop.is_running():
             asyncio.run_coroutine_threadsafe(_broadcast(task_id, level, message), loop)
     except Exception:
         pass
@@ -116,7 +119,28 @@ def serve_spa(full_path: str = ""):
 
 # ─── 启动事件 ──────────────────────────────────────────────
 @app.on_event("startup")
-def on_startup():
+async def on_startup():
+    global _main_loop
+    _main_loop = asyncio.get_running_loop()
     init_db()
     logger.info("数据库初始化完成")
+
+    # 重启后恢复未完成的任务：running → pending，并重新注册调度
+    from src.database import SessionLocal
+    from src.models import Task
+    from src.scheduler import start_task
+    db = SessionLocal()
+    try:
+        stale = db.query(Task).filter(Task.status.in_(["running", "pending"])).all()
+        for task in stale:
+            task.status = "pending"
+        db.commit()
+        for task in stale:
+            start_task(task.id)
+            logger.info(f"恢复任务 Task#{task.id}（{task.departure_name}→{task.destination_name}）")
+    except Exception as e:
+        logger.warning(f"恢复任务失败: {e}")
+    finally:
+        db.close()
+
     logger.info("嵊泗渡轮抢票系统启动成功！访问 http://localhost:8000")

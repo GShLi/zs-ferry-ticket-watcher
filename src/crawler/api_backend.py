@@ -19,16 +19,23 @@ from src.crawler.session import decrypt_password
 from src.models import FerryAccount, Passenger, Vehicle
 
 BASE_URL = "https://pc.ssky123.com/api/v2"
+_SITE_HOME = "https://pc.ssky123.com/"
 _DEFAULT_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
+        "Chrome/147.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9",
     "Referer": "https://pc.ssky123.com/",
     "Origin": "https://pc.ssky123.com",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "sec-ch-ua": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
 }
 
 
@@ -58,8 +65,8 @@ class ApiBackend(CrawlerBackend):
         account.local_storage_json = json.dumps(ls)
         if cookies is not None:
             account.cookies_json = json.dumps(cookies)
-        account.session_expires_at = datetime.utcnow() + timedelta(days=7)
-        account.last_login_at = datetime.utcnow()
+        account.session_expires_at = datetime.now() + timedelta(days=7)
+        account.last_login_at = datetime.now()
         db.commit()
 
     def _make_session(self, account: FerryAccount) -> requests.Session:
@@ -118,6 +125,19 @@ class ApiBackend(CrawlerBackend):
     def login(self, account: FerryAccount, db: Session) -> str:
         password = decrypt_password(account.password_enc)
         sess = requests.Session()
+        # 先访问主页，触发服务器下发 acw_tc 等 WAF Cookie
+        try:
+            home_headers = {
+                "User-Agent": _DEFAULT_HEADERS["User-Agent"],
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9",
+                "sec-ch-ua": _DEFAULT_HEADERS["sec-ch-ua"],
+                "sec-ch-ua-mobile": _DEFAULT_HEADERS["sec-ch-ua-mobile"],
+                "sec-ch-ua-platform": _DEFAULT_HEADERS["sec-ch-ua-platform"],
+            }
+            sess.get(_SITE_HOME, headers=home_headers, timeout=10)
+        except Exception:
+            pass  # 获取 WAF Cookie 失败时仍尝试登录
         h = self._headers(None, 0)
         resp = sess.post(
             BASE_URL + "/user/passLogin",
@@ -136,9 +156,13 @@ class ApiBackend(CrawlerBackend):
         d = resp_data["data"]
         token = d["token"]
         user_id = d["userId"]
-        # 持久化登录后 Set-Cookie 携带的 Cookie（dict 格式）
-        cookies_dict = dict(sess.cookies)
-        self._save_session(account, token, user_id, db, cookies=cookies_dict)
+        # 持久化登录后 Session 中全部 Cookie，保留 domain/path 以供后续请求正确匹配
+        cookies_list = [
+            {"name": c.name, "value": c.value,
+             "domain": c.domain or "", "path": c.path or "/"}
+            for c in sess.cookies
+        ]
+        self._save_session(account, token, user_id, db, cookies=cookies_list)
         return f"登录成功（userId={user_id}）"
 
     def verify_session(self, account: FerryAccount, db: Session) -> bool:
@@ -146,7 +170,7 @@ class ApiBackend(CrawlerBackend):
         if not token or not user_id:
             return False
         try:
-            resp = self._get("/user/tokenCheck", token, user_id)
+            resp = self._get("/user/tokenCheck", token, user_id, account=account)
             return resp.get("code") == 200
         except Exception:
             return False
@@ -175,12 +199,12 @@ class ApiBackend(CrawlerBackend):
         """带自动重认证的 GET：预检 tokenCheck → 请求 → auth 失败则重登录重试一次"""
         self.ensure_logged_in(account, db)
         token, user_id = self._load_session(account)
-        resp_json = self._get(path, token, user_id, **kwargs)
+        resp_json = self._get(path, token, user_id, account=account, **kwargs)
         if self._is_auth_failure(resp_json):
             print(f"[AUTH] GET {path} 返回认证失败，强制重登录...")
             self.login(account, db)
             token, user_id = self._load_session(account)
-            resp_json = self._get(path, token, user_id, **kwargs)
+            resp_json = self._get(path, token, user_id, account=account, **kwargs)
         return resp_json
 
     def _authed_post(self, path: str, account: FerryAccount, db: Session,
@@ -188,12 +212,14 @@ class ApiBackend(CrawlerBackend):
         """带自动重认证的 POST：预检 tokenCheck → 请求 → auth 失败则重登录重试一次"""
         self.ensure_logged_in(account, db)
         token, user_id = self._load_session(account)
-        resp_json = self._post(path, token, user_id, data=data, params=params, extra_headers=extra_headers)
+        resp_json = self._post(path, token, user_id, data=data, params=params,
+                               extra_headers=extra_headers, account=account)
         if self._is_auth_failure(resp_json):
             print(f"[AUTH] POST {path} 返回认证失败，强制重登录...")
             self.login(account, db)
             token, user_id = self._load_session(account)
-            resp_json = self._post(path, token, user_id, data=data, params=params, extra_headers=extra_headers)
+            resp_json = self._post(path, token, user_id, data=data, params=params,
+                                   extra_headers=extra_headers, account=account)
         return resp_json
 
     # ── 同步联系人和车辆 ────────────────────────────────────
@@ -399,18 +425,15 @@ class ApiBackend(CrawlerBackend):
             v = db.query(Vehicle).get(vehicle_id)
             if v:
                 plate_number = v.plate_number
-                # 车辆舱位：依次尝试多个字段名，直接取第一项（不过滤余量）
-                car_seat_raw = (
-                    trip.get("driverSeatClasses") or
-                    trip.get("driverSeatClass") or
-                    trip.get("carSeatClasses") or
-                    []
-                )
+                # 车辆舱位：优先取 pubCurrentCount > 0 的项，否则取第一项
+                car_seat_raw = trip.get("driverSeatClass") or []
                 if isinstance(car_seat_raw, dict):
                     car_seat_raw = [car_seat_raw]
-                car_seat = car_seat_raw[0] if car_seat_raw else {
-                    "className": "7座以下", "classNum": 62, "totalPrice": 0
-                }
+                available_car = [sc for sc in car_seat_raw if sc.get("pubCurrentCount", 0) > 0]
+                car_seat = available_car[0] if available_car else (car_seat_raw[0] if car_seat_raw else None)
+
+        if vehicle_id and car_seat is None:
+            return {"success": False, "order_id": None, "message": "班次中未找到车辆舱位信息，无法下单"}
 
         # 构建旅客订单项
         # 小客车票：驾驶员用车辆舱位 + 车牌，passType="10"；其余随车人员用客座舱位 + 空车牌，passType=1
@@ -485,7 +508,7 @@ class ApiBackend(CrawlerBackend):
             "startPortName": trip.get("startPortName", ""),
             "endPortNo": trip.get("endPortNo"),
             "endPortName": trip.get("endPortName", ""),
-            "sailDate": trip.get("sailDate"),
+            "sailDate": (trip.get("sailDate") or "").replace("/", "-"),
             "sailTime": trip.get("sailTime"),
             "lineDirect": 1,
             "totalFee": int(total_fee),
@@ -503,7 +526,7 @@ class ApiBackend(CrawlerBackend):
         }
         save_resp = self._authed_post(
             "/holding/save", account, db, data=body,
-            extra_headers={"verifyCode": ""},
+            extra_headers={"verifyCode": "undefined"},
         )
         if save_resp.get("code") != 200:
             return {
@@ -511,7 +534,11 @@ class ApiBackend(CrawlerBackend):
                 "message": f"锁座失败：{save_resp.get('message', '')}",
             }
 
-        order_id = str(save_resp.get("data") or "")
+        raw_data = save_resp.get("data") or {}
+        if isinstance(raw_data, dict):
+            order_id = str(raw_data.get("orderId") or "")
+        else:
+            order_id = str(raw_data)
         if not order_id:
             return {"success": False, "order_id": None, "message": "锁座响应中无 orderId"}
         log(f"锁座成功，订单号: {order_id}")
@@ -519,22 +546,30 @@ class ApiBackend(CrawlerBackend):
         # Step 3: 轮询锁座确认
         log("等待锁座确认...")
         confirmed = False
+        holding_fail_msg = ""
         for _ in range(12):
             try:
                 res_resp = self._authed_post(
                     "/query/holding/res", account, db, data={"orderId": order_id}
                 )
-                if res_resp.get("code") == 200:
+                code = res_resp.get("code")
+                if code == 200:
                     confirmed = True
+                    break
+                # 收到明确的失败响应（如 code=300 余票不足），立即中断，无需继续轮询
+                if code is not None and code != 200:
+                    holding_fail_msg = res_resp.get("message") or f"code={code}"
+                    log(f"锁座确认失败：{holding_fail_msg}", "WARN")
                     break
             except Exception:
                 pass
             _time.sleep(1)
 
         if not confirmed:
+            msg = f"锁座确认失败：{holding_fail_msg}" if holding_fail_msg else "锁座确认超时，请手动检查订单状态"
             return {
                 "success": False, "order_id": order_id,
-                "message": "锁座确认超时，请手动检查订单状态",
+                "message": msg,
             }
 
         # Step 4: 获取支付截止时间
@@ -578,13 +613,14 @@ def _pick_seat(seat_classes: list, preferred: list):
     """从舱位列表中按偏好选取第一个有票舱位；无偏好则返回任意可用舱位"""
     available = [
         sc for sc in seat_classes
-        if sc.get("localCurrentCount", 0) > 0 or sc.get("pubCurrentCount", 0) > 0
+        if sc.get("pubCurrentCount", 0) > 0
     ]
     if preferred:
         for sc in available:
             if sc.get("className") in preferred:
                 return sc
-    return available[0] if available else (seat_classes[0] if seat_classes else None)
+        return None  # 指定了偏好舱位但均无余票
+    return available[0] if available else None
 
 
 # ── 数据库写入辅助（与 sync_profile.py 的去重逻辑相同） ─────────────────
