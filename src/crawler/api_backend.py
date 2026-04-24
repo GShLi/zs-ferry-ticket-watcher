@@ -472,9 +472,8 @@ class ApiBackend(CrawlerBackend):
                     "passType": "10",
                 })
             else:
-                order_items.append({
+                item = {
                     "passName": p.name,
-                    "plateNum": "",
                     "credentialType": cred_type,
                     "passId": pass_id,
                     "seatClassName": chosen_seat["className"],
@@ -483,7 +482,11 @@ class ApiBackend(CrawlerBackend):
                     "realFee": chosen_seat.get("totalPrice", 0),
                     "freeChildCount": 0,
                     "passType": 1,
-                })
+                }
+                # 车辆票随车人员需要 plateNum 空字符串；纯旅客票不传该字段
+                if plate_number is not None:
+                    item["plateNum"] = ""
+                order_items.append(item)
 
         if plate_number and not driver_assigned:
             return {
@@ -495,10 +498,12 @@ class ApiBackend(CrawlerBackend):
 
         # Step 2: 提交持票订单
         log("提交持票订单...")
+        # 纯旅客订单强制 buyTicketType=1；车辆票使用 trip 中的值（通常为 2）
+        buy_ticket_type = trip.get("buyTicketType", 1) if vehicle_id else 1
         body = {
-            "accountTypeId": 0,
+            "accountTypeId": "0",
             "userId": user_id,
-            "buyTicketType": trip.get("buyTicketType", 2),
+            "buyTicketType": buy_ticket_type,
             "contactNum": account.phone,
             "lineNum": trip.get("lineNum"),
             "lineName": trip.get("lineName", ""),
