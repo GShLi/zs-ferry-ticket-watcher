@@ -478,8 +478,8 @@ class ApiBackend(CrawlerBackend):
                     "passId": pass_id,
                     "seatClassName": chosen_seat["className"],
                     "seatClass": chosen_seat["classNum"],
-                    "ticketFee": chosen_seat.get("totalPrice", 0),
-                    "realFee": chosen_seat.get("totalPrice", 0),
+                    "ticketFee": int(chosen_seat.get("totalPrice", 0)),
+                    "realFee": int(chosen_seat.get("totalPrice", 0)),
                     "freeChildCount": 0,
                     "passType": 1,
                 }
@@ -500,8 +500,10 @@ class ApiBackend(CrawlerBackend):
         log("提交持票订单...")
         # 纯旅客订单强制 buyTicketType=1；车辆票使用 trip 中的值（通常为 2）
         buy_ticket_type = trip.get("buyTicketType", 1) if vehicle_id else 1
+        # accountTypeId: 车辆订单=0(int)，纯旅客=0(string) — 与 HAR 一致
+        account_type_id = 0 if vehicle_id else "0"
         body = {
-            "accountTypeId": "0",
+            "accountTypeId": account_type_id,
             "userId": user_id,
             "buyTicketType": buy_ticket_type,
             "contactNum": account.phone,

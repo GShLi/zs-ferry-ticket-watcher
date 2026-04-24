@@ -108,9 +108,48 @@ def _run_task(task_id: int):
 
     try:
         task = db.query(Task).get(task_id)
-        if not task or task.status not in ("running", "pending"):
+        if not task or task.status not in ("running", "pending", "waiting"):
             return
 
+        # 子任务（等待主任务注入班次后直接下单）
+        if getattr(task, "parent_task_id", None) and getattr(task, "linked_trip_json", None):
+            trip = json.loads(task.linked_trip_json)
+            pax_ids = json.loads(task.passenger_ids or "[]")
+            preferred_seats = [s.strip() for s in (task.seat_class or "").split(",") if s.strip()]
+            task.status = "running"
+            db.commit()
+            log("INFO", (
+                f"关联任务启动：直接使用主任务锁定班次 "
+                f"{trip.get('lineName','')} {trip.get('sailTime','')} {trip.get('shipName','')}，"
+                f"共 {len(pax_ids)} 名旅客"
+            ))
+            account = db.query(FerryAccount).get(task.account_id)
+            if not account:
+                log("ERROR", "Ferry 账号不存在")
+                task.status = "failed"
+                db.commit()
+                return
+            backend = get_backend(db)
+            result = backend.book_ticket(
+                account, db, trip, pax_ids, None,
+                preferred_seats=preferred_seats,
+                log_fn=log,
+            )
+            if result["success"]:
+                task.status = "booked"
+                db.commit()
+                _save_order(db, task, trip, result)
+                notify_booked(result.get("order_id") or "未知",
+                              f"{task.departure_name}→{task.destination_name}", task.travel_date,
+                              result.get("payment_expire_at", ""))
+                stop_task(task_id)
+            else:
+                log("ERROR", f"关联任务下单失败：{result['message']}")
+                task.status = "failed"
+                db.commit()
+            return
+
+        # 常规任务流程
         # 夜间静默：23:00 ~ 07:00 暂停轮询，等到次日 07:00 再继续
         current_hour = datetime.now().hour
         if task.trigger_type == "poll" and (current_hour >= 23 or current_hour < 7):
@@ -197,33 +236,9 @@ def _run_task(task_id: int):
             db.commit()
             route = f"{task.departure_name}→{task.destination_name}"
             # 保存订单记录
-            try:
-                from src.models import Order
-                import json as _json
-                pax_names = []
-                if task.passenger_ids:
-                    from src.models import Passenger
-                    pax_ids_list = _json.loads(task.passenger_ids)
-                    pax_names = [
-                        p.name for p in db.query(Passenger).filter(Passenger.id.in_(pax_ids_list)).all()
-                    ]
-                order_rec = Order(
-                    task_id=task_id,
-                    account_id=task.account_id,
-                    order_id=result.get("order_id") or "",
-                    departure_name=task.departure_name,
-                    destination_name=task.destination_name,
-                    travel_date=task.travel_date,
-                    sail_time=result.get("sail_time") or trip.get("sailTime", ""),
-                    ship_name=result.get("ship_name") or trip.get("shipName", ""),
-                    passengers_json=_json.dumps(pax_names, ensure_ascii=False),
-                    payment_expire_at=result.get("payment_expire_at") or "",
-                    status="pending_payment",
-                )
-                db.add(order_rec)
-                db.commit()
-            except Exception as _oe:
-                logger.warning(f"保存订单记录失败: {_oe}")
+            _save_order(db, task, trip, result)
+            # 触发关联子任务
+            _trigger_child_tasks(db, task_id, trip, log)
             notify_booked(result.get("order_id") or "未知", route, task.travel_date)
             stop_task(task_id)
         else:
@@ -252,6 +267,51 @@ def _run_task(task_id: int):
         db.close()
         if reschedule:
             _reschedule_poll(task_id)
+
+
+def _save_order(db, task, trip, result):
+    """将下单成功的结果写入 orders 表"""
+    try:
+        from src.models import Order, Passenger
+        import json as _json
+        pax_ids_list = _json.loads(task.passenger_ids or "[]")
+        pax_names = [
+            p.name for p in db.query(Passenger).filter(Passenger.id.in_(pax_ids_list)).all()
+        ]
+        db.add(Order(
+            task_id=task.id,
+            account_id=task.account_id,
+            order_id=result.get("order_id") or "",
+            departure_name=task.departure_name,
+            destination_name=task.destination_name,
+            travel_date=task.travel_date,
+            sail_time=result.get("sail_time") or trip.get("sailTime", ""),
+            ship_name=result.get("ship_name") or trip.get("shipName", ""),
+            passengers_json=_json.dumps(pax_names, ensure_ascii=False),
+            payment_expire_at=result.get("payment_expire_at") or "",
+            status="pending_payment",
+        ))
+        db.commit()
+    except Exception as e:
+        logger.warning(f"保存订单记录失败: {e}")
+
+
+def _trigger_child_tasks(db, parent_task_id: int, trip: dict, log_fn):
+    """主任务下单成功后，将班次注入所有 waiting 子任务并立刻触发"""
+    from src.models import Task
+    children = db.query(Task).filter(
+        Task.parent_task_id == parent_task_id,
+        Task.status == "waiting",
+    ).all()
+    for child in children:
+        try:
+            child.linked_trip_json = json.dumps(trip, ensure_ascii=False)
+            child.status = "pending"
+            db.commit()
+            start_task(child.id)
+            log_fn("INFO", f"已触发关联旅客单 Task#{child.id}（共 {len(json.loads(child.passenger_ids or '[]'))} 人）")
+        except Exception as e:
+            logger.warning(f"触发子任务 Task#{child.id} 失败: {e}")
 
 
 def start_task(task_id: int):

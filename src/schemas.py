@@ -105,6 +105,12 @@ class PortsCacheOut(BaseModel):
 
 
 # ─── 任务 ────────────────────────────────────────────────
+class LinkedPassengerTask(BaseModel):
+    """随主任务同步创建的关联旅客单（等待主任务成功后触发）"""
+    passenger_ids: List[int]
+    seat_classes: List[str] = []
+
+
 class TaskCreate(BaseModel):
     account_id: int
     departure_num: int
@@ -121,6 +127,22 @@ class TaskCreate(BaseModel):
     passenger_ids: List[int] = []
     trigger_type: str = "poll"          # poll / schedule
     trigger_value: str = ""             # poll: ""（随机间隔）; schedule: ISO datetime
+    linked_passenger_task: Optional["LinkedPassengerTask"] = None  # 创建时附带的关联旅客单
+
+
+class TaskUpdate(BaseModel):
+    """编辑任务（不可更改出发/到达港口；不可新增/删除关联旅客单）"""
+    account_id: Optional[int] = None
+    travel_date: Optional[str] = None
+    ticket_type: Optional[str] = None
+    seat_classes: Optional[List[str]] = None
+    sail_time_from: Optional[str] = None
+    sail_time_to: Optional[str] = None
+    vehicle_id: Optional[int] = None
+    driver_passenger_id: Optional[int] = None
+    passenger_ids: Optional[List[int]] = None
+    trigger_type: Optional[str] = None
+    trigger_value: Optional[str] = None
 
 
 class TaskOut(BaseModel):
@@ -141,6 +163,8 @@ class TaskOut(BaseModel):
     trigger_type: str
     trigger_value: str
     status: str
+    parent_task_id: Optional[int] = None
+    child_task_ids: List[int] = []
     created_at: datetime
     updated_at: datetime
 

@@ -80,6 +80,8 @@ body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #f
 .task-meta-item span { color: #1a1a1a; font-weight: 500; }
 .task-footer { display: flex; align-items: center; justify-content: space-between; }
 .task-passengers { font-size: 12px; color: #888; }
+.child-tasks { margin-top: 8px; margin-left: 24px; display: flex; flex-direction: column; gap: 8px; }
+.child-task-card { border-left: 3px solid #1a6fb3; background: #f5f9ff; }
 
 /* ── 日志 ────────────────────────────── */
 .log-container {
@@ -153,10 +155,10 @@ function fmtDate(s) {
   return new Date(s).toLocaleString("zh-CN", { hour12: false });
 }
 function statusLabel(s) {
-  return { pending:"等待中", running:"运行中", booked:"已下单", failed:"失败", stopped:"已停止" }[s] || s;
+  return { pending:"等待中", running:"运行中", booked:"已下单", failed:"失败", stopped:"已停止", waiting:"等待触发" }[s] || s;
 }
 function statusType(s) {
-  return { pending:"info", running:"primary", booked:"success", failed:"danger", stopped:"warning" }[s] || "info";
+  return { pending:"info", running:"primary", booked:"success", failed:"danger", stopped:"warning", waiting:"info" }[s] || "info";
 }
 
 // ══════════════════════════════════════════════════════════
@@ -315,38 +317,64 @@ const TasksView = {
       暂无任务，点击右上角新建
     </div>
     <div class="task-grid">
-      <div v-for="t in tasks" :key="t.id" class="task-card" @click="openLogs(t)">
-        <div class="task-card-header">
-          <div class="task-route">
-            <span>{{ t.departure_name }}</span>
-            <span style="color:#1a6fb3">→</span>
-            <span>{{ t.destination_name }}</span>
+      <template v-for="group in groupedTasks" :key="group.main.id">
+        <div class="task-card" @click="openLogs(group.main)">
+          <div class="task-card-header">
+            <div class="task-route">
+              <span>{{ group.main.departure_name }}</span>
+              <span style="color:#1a6fb3">→</span>
+              <span>{{ group.main.destination_name }}</span>
+            </div>
+            <el-tag :type="statusType(group.main.status)" size="small">{{ statusLabel(group.main.status) }}</el-tag>
           </div>
-          <el-tag :type="statusType(t.status)" size="small">{{ statusLabel(t.status) }}</el-tag>
-        </div>
-        <div class="task-meta">
-          <div class="task-meta-item">日期：<span>{{ t.travel_date }}</span></div>
-          <div class="task-meta-item">票种：<span>{{ t.ticket_type }}</span></div>
-          <div class="task-meta-item" v-if="t.seat_classes && t.seat_classes.length">舱位：<span>{{ t.seat_classes.join(' / ') }}</span></div>
-          <div class="task-meta-item" v-if="t.vehicle_id">车牌：<span>{{ vehicles.find(v=>v.id===t.vehicle_id)?.plate_number || t.vehicle_id }}</span></div>
-          <div class="task-meta-item">触发：<span>{{ triggerLabel(t) }}</span></div>
-          <div class="task-meta-item">创建：<span>{{ fmtDate(t.created_at) }}</span></div>
-        </div>
-        <div class="task-footer">
-          <div class="task-passengers">旅客 {{ t.passenger_ids.length }} 人</div>
-          <div style="display:flex;gap:8px" @click.stop>
-            <el-button v-if="t.status==='pending'||t.status==='stopped'||t.status==='failed'"
-              type="primary" size="small" @click="startTask(t)">启动</el-button>
-            <el-button v-if="t.status==='running'"
-              type="warning" size="small" @click="stopTask(t)">停止</el-button>
-            <el-button type="danger" size="small" plain @click="deleteTask(t)">删除</el-button>
+          <div class="task-meta">
+            <div class="task-meta-item">日期：<span>{{ group.main.travel_date }}</span></div>
+            <div class="task-meta-item">票种：<span>{{ group.main.ticket_type }}</span></div>
+            <div class="task-meta-item" v-if="group.main.seat_classes && group.main.seat_classes.length">舱位：<span>{{ group.main.seat_classes.join(' / ') }}</span></div>
+            <div class="task-meta-item" v-if="group.main.vehicle_id">车牌：<span>{{ vehicles.find(v=>v.id===group.main.vehicle_id)?.plate_number || group.main.vehicle_id }}</span></div>
+            <div class="task-meta-item">触发：<span>{{ triggerLabel(group.main) }}</span></div>
+            <div class="task-meta-item">创建：<span>{{ fmtDate(group.main.created_at) }}</span></div>
+          </div>
+          <div class="task-footer">
+            <div class="task-passengers">旅客 {{ group.main.passenger_ids.length }} 人{{ group.main.child_task_ids.length ? ' · 含关联单' : '' }}</div>
+            <div style="display:flex;gap:8px" @click.stop>
+              <el-button v-if="group.main.status==='pending'||group.main.status==='stopped'||group.main.status==='failed'"
+                type="primary" size="small" @click="startTask(group.main)">启动</el-button>
+              <el-button v-if="group.main.status==='running'"
+                type="warning" size="small" @click="stopTask(group.main)">停止</el-button>
+              <el-button v-if="group.main.status!=='running'"
+                size="small" plain @click="openEdit(group.main)">编辑</el-button>
+              <el-button type="danger" size="small" plain @click="deleteTask(group.main)">删除</el-button>
+            </div>
           </div>
         </div>
-      </div>
+        <div v-if="group.children.length" class="child-tasks">
+          <div v-for="child in group.children" :key="child.id"
+            class="task-card child-task-card" @click="openLogs(child)">
+            <div class="task-card-header">
+              <div class="task-route" style="font-size:14px">
+                <span style="color:#888;font-size:12px;margin-right:4px">🔗关联旅客单</span>
+                {{ child.departure_name }} → {{ child.destination_name }}
+              </div>
+              <el-tag :type="statusType(child.status)" size="small">{{ statusLabel(child.status) }}</el-tag>
+            </div>
+            <div class="task-meta">
+              <div class="task-meta-item">旅客：<span>{{ child.passenger_ids.length }} 人</span></div>
+              <div class="task-meta-item" v-if="child.seat_classes && child.seat_classes.length">舱位：<span>{{ child.seat_classes.join(' / ') }}</span></div>
+            </div>
+            <div class="task-footer">
+              <div class="task-passengers" style="color:#1a6fb3;font-size:12px">等待 #{{ child.parent_task_id }} 成功后自动触发</div>
+              <div @click.stop>
+                <el-button type="danger" size="small" plain @click="deleteTask(child)">删除</el-button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </template>
     </div>
 
     <!-- 新建任务抽屉 -->
-    <el-drawer v-model="createDrawer" title="新建抢票任务" size="480px" direction="rtl">
+    <el-drawer v-model="createDrawer" :title="editMode ? '编辑任务 #' + editTaskId : '新建抢票任务'" size="480px" direction="rtl">
       <el-form :model="form" label-width="88px" size="default">
         <el-form-item label="Ferry账号" required>
           <el-select v-model="form.account_id" placeholder="选择账号" style="width:100%">
@@ -355,13 +383,14 @@ const TasksView = {
           </el-select>
         </el-form-item>
         <el-form-item label="出发港口" required>
-          <el-select v-model="departureNum" placeholder="选择出发港" style="width:100%" @change="onDepartureChange">
+          <el-select v-model="departureNum" placeholder="选择出发港" style="width:100%"
+            :disabled="editMode" @change="onDepartureChange">
             <el-option v-for="p in departurePorts" :key="p.num" :label="p.name" :value="p.num" />
           </el-select>
         </el-form-item>
         <el-form-item label="到达港口" required>
           <el-select v-model="destinationNum" placeholder="先选出发港" style="width:100%"
-            :disabled="!departureNum">
+            :disabled="editMode || !departureNum">
             <el-option v-for="p in destinationPorts" :key="p.num" :label="p.name" :value="p.num" />
           </el-select>
         </el-form-item>
@@ -425,6 +454,38 @@ const TasksView = {
             </div>
           </div>
         </el-form-item>
+
+        <!-- 关联旅客单（仅新建时显示） -->
+        <template v-if="!editMode">
+        <el-divider />
+        <div style="margin-bottom:12px">
+          <el-button v-if="!showLinked" size="small" @click="showLinked=true">+ 添加关联旅客单（超员拆单）</el-button>
+          <template v-else>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span style="font-weight:600;color:#1a6fb3">🔗 关联旅客单</span>
+              <el-button size="small" text @click="showLinked=false;linkedForm.passenger_ids=[];linkedForm.seat_classes=[]">移除</el-button>
+            </div>
+            <div style="font-size:12px;color:#aaa;margin-bottom:8px">主任务（车辆票）下单成功后，立即对同一班次触发此旅客单</div>
+            <el-form-item label="关联旅客" style="margin-bottom:8px">
+              <el-checkbox-group v-model="linkedForm.passenger_ids">
+                <el-checkbox v-for="p in passengers" :key="p.id" :value="p.id" style="margin-bottom:4px;display:block">
+                  {{ p.name }}（{{ p.id_type }}：{{ p.id_number }}）
+                </el-checkbox>
+              </el-checkbox-group>
+            </el-form-item>
+            <el-form-item label="舱位偏好" style="margin-bottom:0">
+              <el-checkbox-group v-model="linkedForm.seat_classes">
+                <el-checkbox value="上舱">上舱</el-checkbox>
+                <el-checkbox value="中舱">中舱</el-checkbox>
+                <el-checkbox value="下前舱">下前舱</el-checkbox>
+                <el-checkbox value="下舱卧">下舱卧</el-checkbox>
+                <el-checkbox value="商务B">商务B</el-checkbox>
+              </el-checkbox-group>
+            </el-form-item>
+          </template>
+        </div>
+        </template><!-- end v-if="!editMode" -->
+
         <el-form-item label="触发方式" required>
           <el-radio-group v-model="form.trigger_type">
             <el-radio value="poll">随机轮询（1~10s）</el-radio>
@@ -438,7 +499,8 @@ const TasksView = {
       </el-form>
       <template #footer>
         <el-button @click="createDrawer=false">取消</el-button>
-        <el-button type="primary" :loading="creating" @click="submitCreate">创建并启动</el-button>
+        <el-button v-if="!editMode" type="primary" :loading="creating" @click="submitCreate">创建并启动</el-button>
+        <el-button v-else type="primary" :loading="creating" @click="submitEdit">保存修改</el-button>
       </template>
     </el-drawer>
 
@@ -483,6 +545,10 @@ const TasksView = {
     const scheduleTime = ref("");
     const sailTimeFrom = ref("");
     const sailTimeTo = ref("");
+    const showLinked = ref(false);
+    const linkedForm = reactive({ passenger_ids: [], seat_classes: [] });
+    const editMode = ref(false);
+    const editTaskId = ref(null);
 
     const form = reactive({
       account_id: null,
@@ -515,6 +581,15 @@ const TasksView = {
 
     function disablePassedDate(d) { return d < new Date(new Date().setHours(0,0,0,0)); }
 
+    const groupedTasks = computed(() => {
+      return tasks.value
+        .filter(t => !t.parent_task_id)
+        .map(t => ({
+          main: t,
+          children: tasks.value.filter(c => c.parent_task_id === t.id),
+        }));
+    });
+
     async function load() {
       [tasks.value, accounts.value, passengers.value, vehicles.value] = await Promise.all([
         http.get("/api/tasks/"), http.get("/api/accounts/"), http.get("/api/passengers/"),
@@ -527,6 +602,8 @@ const TasksView = {
     }
 
     async function openCreate() {
+      editMode.value = false;
+      editTaskId.value = null;
       departureNum.value = null;
       destinationNum.value = null;
       form.account_id = null;
@@ -541,6 +618,9 @@ const TasksView = {
       form.trigger_type = "poll";
       sailTimeFrom.value = "";
       sailTimeTo.value = "";
+      showLinked.value = false;
+      linkedForm.passenger_ids = [];
+      linkedForm.seat_classes = [];
       createDrawer.value = true;
     }
 
@@ -554,6 +634,8 @@ const TasksView = {
         return ElMessage.warning("小客车票请选择车辆");
       if (form.ticket_type === "小客车及随车人员" && form.vehicle_id && !form.driver_passenger_id)
         return ElMessage.warning("小客车票请指定驾驶员");
+      if (showLinked.value && linkedForm.passenger_ids.length === 0)
+        return ElMessage.warning("关联旅客单至少选择一名旅客");
 
       const dep = departurePorts.value.find(p => p.num === departureNum.value);
       const dst = destinationPorts.value.find(p => p.num === destinationNum.value);
@@ -570,9 +652,74 @@ const TasksView = {
           trigger_value: trigVal,
           sail_time_from: sailTimeFrom.value || "",
           sail_time_to: sailTimeTo.value || "",
+          linked_passenger_task: (showLinked.value && linkedForm.passenger_ids.length)
+            ? { passenger_ids: linkedForm.passenger_ids, seat_classes: linkedForm.seat_classes }
+            : null,
         });
         await http.post(`/api/tasks/${task.id}/start`);
-        ElMessage.success("任务已创建并启动");
+        ElMessage.success(showLinked.value && linkedForm.passenger_ids.length
+          ? "任务已创建并启动，关联旅客单将在车辆票下单成功后自动触发"
+          : "任务已创建并启动");
+        createDrawer.value = false;
+        load();
+      } catch (e) {
+        ElMessage.error(e.message);
+      } finally {
+        creating.value = false;
+      }
+    }
+
+    function openEdit(t) {
+      editMode.value = true;
+      editTaskId.value = t.id;
+      // 填充路线（从 routes 反查 num）
+      departureNum.value = t.departure_num;
+      destinationNum.value = t.destination_num;
+      form.account_id = t.account_id;
+      form.travel_date = t.travel_date;
+      form.ticket_type = t.ticket_type;
+      form.seat_classes = [...t.seat_classes];
+      form.sail_time_from = t.sail_time_from || "";
+      form.sail_time_to = t.sail_time_to || "";
+      form.vehicle_id = t.vehicle_id || null;
+      form.driver_passenger_id = t.driver_passenger_id || null;
+      form.passenger_ids = [...t.passenger_ids];
+      form.trigger_type = t.trigger_type;
+      sailTimeFrom.value = t.sail_time_from || "";
+      sailTimeTo.value = t.sail_time_to || "";
+      scheduleTime.value = t.trigger_type === "schedule" ? t.trigger_value : "";
+      showLinked.value = false;
+      linkedForm.passenger_ids = [];
+      linkedForm.seat_classes = [];
+      createDrawer.value = true;
+    }
+
+    async function submitEdit() {
+      if (!form.account_id) return ElMessage.warning("请选择 Ferry 账号");
+      if (!form.travel_date) return ElMessage.warning("请选择日期");
+      if (!form.passenger_ids.length) return ElMessage.warning("请选择至少一名旅客");
+      if (form.ticket_type === "小客车及随车人员" && !form.vehicle_id)
+        return ElMessage.warning("小客车票请选择车辆");
+      if (form.ticket_type === "小客车及随车人员" && form.vehicle_id && !form.driver_passenger_id)
+        return ElMessage.warning("小客车票请指定驾驶员");
+
+      const trigVal = form.trigger_type === "poll" ? "" : scheduleTime.value;
+      creating.value = true;
+      try {
+        await http.put(`/api/tasks/${editTaskId.value}`, {
+          account_id: form.account_id,
+          travel_date: form.travel_date,
+          ticket_type: form.ticket_type,
+          seat_classes: form.seat_classes,
+          sail_time_from: sailTimeFrom.value || "",
+          sail_time_to: sailTimeTo.value || "",
+          vehicle_id: form.vehicle_id,
+          driver_passenger_id: form.driver_passenger_id,
+          passenger_ids: form.passenger_ids,
+          trigger_type: form.trigger_type,
+          trigger_value: trigVal,
+        });
+        ElMessage.success("任务已更新");
         createDrawer.value = false;
         load();
       } catch (e) {
@@ -638,7 +785,8 @@ const TasksView = {
              logTask, logs, logEl, form, departureNum, destinationNum, departurePorts,
              destinationPorts, scheduleTime, sailTimeFrom, sailTimeTo, onDepartureChange,
              disablePassedDate, openCreate, submitCreate, startTask, stopTask,
-             deleteTask, openLogs, logTitle, triggerLabel, fmtDate, statusLabel, statusType };
+             deleteTask, openLogs, logTitle, triggerLabel, fmtDate, statusLabel, statusType,
+             showLinked, linkedForm, groupedTasks, editMode, editTaskId, openEdit, submitEdit };
   }
 };
 

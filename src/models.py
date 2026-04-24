@@ -68,7 +68,9 @@ class Task(Base):
     passenger_ids = Column(Text, default="[]")  # JSON list of passenger IDs
     trigger_type = Column(String(16), nullable=False, default="poll")  # poll / schedule
     trigger_value = Column(String(64), nullable=False)  # poll: 间隔秒数; schedule: ISO datetime
-    status = Column(String(16), default="pending")  # pending/running/booked/failed/stopped
+    status = Column(String(16), default="pending")  # pending/running/booked/failed/stopped/waiting
+    parent_task_id = Column(Integer, ForeignKey("tasks.id"), nullable=True)  # 关联主任务 ID（从任务专用）
+    linked_trip_json = Column(Text, nullable=True)   # 主任务成功后注入的班次数据（从任务直接下单用）
     created_by = Column(Integer, ForeignKey("system_users.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
